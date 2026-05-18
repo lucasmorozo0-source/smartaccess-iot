@@ -1,45 +1,55 @@
 #include <Keypad.h>
-#include <Wire.h>
-#include <LiquidCrystal_I2C.h>
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <LiquidCrystal.h>
 
-// ================== KEYPAD ==================
+// WIFI
+const char* ssid = "SEU_WIFI";
+const char* passwordWifi = "SUA_SENHA";
+
+// MQTT
+const char* mqtt_server = "broker.hivemq.com";
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+// LCD: RS, E, D4, D5, D6, D7
+LiquidCrystal lcd(21, 22, 18, 19, 23, 5);
+
+// TECLADO 3x4
 #define ROW_NUM 4
-#define COL_NUM 4
+#define COL_NUM 3
 
 char keys[ROW_NUM][COL_NUM] = {
-  {'1','2','3','A'},
-  {'4','5','6','B'},
-  {'7','8','9','C'},
-  {'*','0','#','D'}
+  {'1','2','3'},
+  {'4','5','6'},
+  {'7','8','9'},
+  {'*','0','#'}
 };
 
-// pinos seguros
-byte row_pins[ROW_NUM] = {13, 12, 14, 27};
-byte col_pins[COL_NUM] = {26, 25, 33, 32};
+// MAPEAMENTO FINAL
+byte row_pins[ROW_NUM] = {11, 4, 2, 15};
+byte col_pins[COL_NUM] = {10, 12, 3};
 
 Keypad keypad = Keypad(makeKeymap(keys), row_pins, col_pins, ROW_NUM, COL_NUM);
 
-// ================== LCD ==================
-LiquidCrystal_I2C lcd(0x27, 20, 4);
+// LEDS
+int ledVerde = 6;
+int ledVermelho = 7;
 
-// ================== LED ==================
-int ledVerde = 4;
-int ledVermelho = 16;
-
-// ================== CONFIG ==================
-String password = "1234";
+// SENHA
+String senhaAtual = "1234";
 String input = "";
 
 int tentativas = 0;
-unsigned long lastInputTime = 0;
-const int timeout = 10000;
 
-// ================== SETUP ==================
+// =====================================================
+
 void setup() {
+
   Serial.begin(115200);
 
-  lcd.init();
-  lcd.backlight();
+  lcd.begin(16, 2);
+  lcd.clear();
 
   pinMode(ledVerde, OUTPUT);
   pinMode(ledVermelho, OUTPUT);
@@ -47,76 +57,212 @@ void setup() {
   digitalWrite(ledVerde, LOW);
   digitalWrite(ledVermelho, LOW);
 
-  mostrarMensagem("SmartAccess", "Digite senha");
+  mostrarMensagem("SmartAccess", "Iniciando...");
+
+  conectarWiFi();
+
+  client.setServer(mqtt_server, 1883);
+  client.setCallback(callbackMQTT);
+
+  mostrarMensagem("Digite senha", "");
 }
 
-// ================== LOOP ==================
-void loop() {
-  char key = keypad.getKey();
+// =====================================================
 
-  // timeout
-  if (millis() - lastInputTime > timeout && input.length() > 0) {
-    input = "";
-    mostrarMensagem("Tempo esgotado", "Digite novamente");
+void loop() {
+
+  if (!client.connected()) {
+    reconectarMQTT();
   }
 
+  client.loop();
+
+  char key = keypad.getKey();
+
   if (key) {
-    lastInputTime = millis();
+
+    Serial.print("Tecla: ");
+    Serial.println(key);
 
     if (key == '#') {
+
       verificarSenha();
-    }
-    else if (key == '*') {
+
+    } else if (key == '*') {
+
       limparEntrada();
-    }
-    else {
+
+    } else {
+
       adicionarTecla(key);
     }
   }
 }
 
-// ================== FUNCOES ==================
+// =====================================================
+// WIFI
+// =====================================================
 
-void adicionarTecla(char key) {
-  input += key;
+void conectarWiFi() {
+
+  WiFi.begin(ssid, passwordWifi);
 
   lcd.clear();
-  lcd.setCursor(0,0);
+  lcd.setCursor(0, 0);
+  lcd.print("Conectando...");
+
+  while (WiFi.status() != WL_CONNECTED) {
+
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println();
+  Serial.println("WiFi conectado");
+
+  Serial.print("IP ESP32: ");
+  Serial.println(WiFi.localIP());
+
+  mostrarMensagem("WiFi OK", "");
+
+  delay(2000);
+}
+
+// =====================================================
+// MQTT
+// =====================================================
+
+void reconectarMQTT() {
+
+  while (!client.connected()) {
+
+    Serial.print("MQTT...");
+
+    String clientId = "ESP32_";
+    clientId += String(random(0xffff), HEX);
+
+    if (client.connect(clientId.c_str())) {
+
+      Serial.println(" conectado");
+
+      client.publish("smartaccess/status", "online");
+
+      client.subscribe("smartaccess/comando");
+      client.subscribe("smartaccess/senha");
+
+    } else {
+
+      Serial.print(" erro ");
+      Serial.println(client.state());
+
+      delay(2000);
+    }
+  }
+}
+
+void callbackMQTT(char* topic, byte* payload, unsigned int length) {
+
+  String mensagem = "";
+
+  for (int i = 0; i < length; i++) {
+    mensagem += (char)payload[i];
+  }
+
+  Serial.print("MQTT recebido [");
+  Serial.print(topic);
+  Serial.print("]: ");
+  Serial.println(mensagem);
+
+  if (String(topic) == "smartaccess/comando") {
+
+    if (mensagem == "LIBERAR") {
+
+      liberarRemoto();
+    }
+  }
+
+  if (String(topic) == "smartaccess/senha") {
+
+    senhaAtual = mensagem;
+
+    client.publish("smartaccess/status", "senha_alterada");
+
+    mostrarMensagem("Senha alterada", "via Web");
+
+    delay(10000);
+
+    mostrarMensagem("Digite senha", "");
+  }
+}
+
+// =====================================================
+// TECLADO
+// =====================================================
+
+void adicionarTecla(char key) {
+
+  input += key;
+
+  client.publish("smartaccess/tecla", String(key).c_str());
+
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
   lcd.print("Senha:");
 
-  lcd.setCursor(0,1);
+  lcd.setCursor(0, 1);
 
   for (int i = 0; i < input.length(); i++) {
+
     lcd.print("*");
   }
 }
 
 void limparEntrada() {
+
   input = "";
-  mostrarMensagem("Entrada limpa", "Digite novamente");
+
+  client.publish("smartaccess/status", "entrada_limpa");
+
+  mostrarMensagem("Entrada limpa", "");
+
+  delay(10000);
+
+  mostrarMensagem("Digite senha", "");
 }
 
+// =====================================================
+// SENHA
+// =====================================================
+
 void verificarSenha() {
-  if (input == password) {
+
+  if (input == senhaAtual) {
+
     acessoLiberado();
+
   } else {
+
     acessoNegado();
   }
 
   input = "";
 }
 
-// ================== RESULTADOS ==================
-
 void acessoLiberado() {
+
   tentativas = 0;
 
   digitalWrite(ledVerde, HIGH);
   digitalWrite(ledVermelho, LOW);
 
+  client.publish("smartaccess/acesso", "OK");
+
   mostrarMensagem("ACESSO OK", "Bem-vindo");
 
-  delay(2000);
+  Serial.println("Acesso liberado");
+
+  delay(10000);
 
   digitalWrite(ledVerde, LOW);
 
@@ -124,40 +270,67 @@ void acessoLiberado() {
 }
 
 void acessoNegado() {
+
   tentativas++;
 
   digitalWrite(ledVerde, LOW);
   digitalWrite(ledVermelho, HIGH);
 
-  lcd.clear();
-  lcd.setCursor(0,0);
-  lcd.print("Senha incorreta");
+  client.publish("smartaccess/acesso", "ERRO");
 
-  lcd.setCursor(0,1);
-  lcd.print("Tentativas: ");
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+  lcd.print("Senha errada");
+
+  lcd.setCursor(0, 1);
+  lcd.print("Tentativa ");
   lcd.print(tentativas);
 
-  delay(2000);
+  Serial.println("Acesso negado");
+
+  delay(10000);
 
   digitalWrite(ledVermelho, LOW);
-
-  if (tentativas >= 3) {
-    lcd.clear();
-    lcd.print("BLOQUEADO!");
-    delay(3000);
-    tentativas = 0;
-  }
 
   mostrarMensagem("Digite senha", "");
 }
 
-// ================== LCD ==================
+// =====================================================
+// ACESSO REMOTO
+// =====================================================
+
+void liberarRemoto() {
+
+  tentativas = 0;
+
+  digitalWrite(ledVerde, HIGH);
+  digitalWrite(ledVermelho, LOW);
+
+  mostrarMensagem("ACESSO REMOTO", "Liberado");
+
+  client.publish("smartaccess/acesso", "REMOTO_OK");
+
+  Serial.println("Acesso remoto liberado");
+
+  delay(10000);
+
+  digitalWrite(ledVerde, LOW);
+
+  mostrarMensagem("Digite senha", "");
+}
+
+// =====================================================
+// LCD
+// =====================================================
 
 void mostrarMensagem(String l1, String l2) {
+
   lcd.clear();
-  lcd.setCursor(0,0);
+
+  lcd.setCursor(0, 0);
   lcd.print(l1);
 
-  lcd.setCursor(0,1);
+  lcd.setCursor(0, 1);
   lcd.print(l2);
 }
