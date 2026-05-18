@@ -232,7 +232,7 @@ def home():
             }}
         </style>
 
-        <meta http-equiv="refresh" content="2">
+        <meta http-equiv="refresh" content="10">
     </head>
 
     <body>
