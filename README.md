@@ -22,4 +22,8 @@ Projeto de controle de acesso utilizando ESP32-C6, teclado matricial, LCD 16x2, 
 
 ## Integrantes
 
-- Lucas Morozo
+- Daniel Strapazzon;
+- Fernando Klein;
+- Lucas Morozo.
+
+  
